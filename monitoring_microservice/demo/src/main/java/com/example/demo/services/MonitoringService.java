@@ -14,7 +14,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class MonitoringService {
@@ -68,4 +71,12 @@ public class MonitoringService {
         LocalDateTime hourStart = dateTime.truncatedTo(ChronoUnit.HOURS);
         return hourStart.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
     }
+    // ... restul codului ...
+
+    // Metodă pentru API-ul REST (folosită de Frontend pentru grafice)
+    public List<HourlyConsumption> getHourlyConsumption(UUID deviceId) {
+        // Mult mai rapid: DB-ul filtrează și sortează
+        return consumptionRepository.findByDeviceIdOrderByTimestampAsc(deviceId);
+    }
+
 }

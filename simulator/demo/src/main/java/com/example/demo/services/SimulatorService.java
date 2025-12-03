@@ -10,19 +10,21 @@ import org.springframework.core.io.ClassPathResource;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.Random;
 
 @Service
 public class SimulatorService implements CommandLineRunner {
 
     private final RabbitTemplate rabbitTemplate;
-
+    private final Random random = new Random();
     @Value("${simulator.device-id}")
     private String deviceIdString;
 
-    @Value("${simulator.csv-path}")
-    private String csvPath;
 
     public SimulatorService(RabbitTemplate rabbitTemplate) {
         this.rabbitTemplate = rabbitTemplate;
@@ -34,43 +36,63 @@ public class SimulatorService implements CommandLineRunner {
         try {
             deviceId = UUID.fromString(deviceIdString);
         } catch (IllegalArgumentException e) {
-            System.err.println("INVALID DEVICE ID IN CONFIG. Please set a valid UUID.");
+            System.err.println("⚠️ INVALID DEVICE ID. Set correct UUID in application.properties or Docker.");
             return;
         }
 
-        System.out.println("🚀 Starting Simulator for Device ID: " + deviceId);
+        System.out.println("🚀 Smart Meter Simulator STARTED for Device: " + deviceId);
 
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new ClassPathResource(csvPath).getInputStream()))) {
+        // 1. Initializare Base Load (ex: între 0.5 și 1.5 kWh medie)
+        double currentLoad = 0.5 + random.nextDouble();
 
-            String line;
-            while ((line = br.readLine()) != null) {
-                try {
-                    double value = Double.parseDouble(line.trim());
+        // 2. Timpul simulat (pornind de acum)
+        long simulatedTime = System.currentTimeMillis();
 
-                    MeasurementDTO measurement = new MeasurementDTO(
-                            System.currentTimeMillis(),
-                            deviceId,
-                            value
-                    );
+        while (true) {
+            // Aflăm ora curentă din timpul simulat (pentru a aplica tiparul Zi/Noapte)
+            LocalDateTime currentTime = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(simulatedTime), ZoneId.systemDefault());
+            int hour = currentTime.getHour();
 
-                    // Trimitem mesajul pe Topic
-                    rabbitTemplate.convertAndSend(
-                            RabbitMQConfig.EXCHANGE_NAME,
-                            "sensor.measurement",
-                            measurement
-                    );
-
-                    System.out.println("Sent: " + value);
-
-                    // Așteptăm puțin (ex: 3 secunde) pentru a simula trecerea timpului
-                    // În realitate ar fi 10 minute, dar pentru demo vrem să vedem datele curgând
-                    TimeUnit.SECONDS.sleep(3);
-
-                } catch (NumberFormatException e) {
-                    // Ignorăm liniile care nu sunt numere
-                }
+            // 3. Ajustare în funcție de momentul zilei (Realistic Patterns)
+            double timeFactor = 1.0;
+            if (hour >= 23 || hour < 7) {
+                timeFactor = 0.3; // Noapte: consum mic
+            } else if (hour >= 18 && hour < 23) {
+                timeFactor = 1.5; // Seara: consum ridicat (Peak)
             }
+            // Ziua (07-18) rămâne factor 1.0
+
+            // 4. Calcul valoare finală cu mici fluctuații random (noise)
+            double noise = (random.nextDouble() - 0.5) * 0.2; // Fluctuație +/- 0.1
+            double measurementValue = (currentLoad * timeFactor) + noise;
+
+            // Asigurăm că nu e negativ
+            if (measurementValue < 0) measurementValue = 0.05;
+
+            // 5. Creare Mesaj
+            MeasurementDTO measurement = new MeasurementDTO(
+                    simulatedTime,
+                    deviceId,
+                    measurementValue
+            );
+
+            // 6. Trimitere la RabbitMQ
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    "sensor.measurement",
+                    measurement
+            );
+
+            System.out.println("📡 Time: " + currentTime.toLocalTime() +
+                    " | Val: " + String.format("%.2f", measurementValue) + " kWh");
+
+            // 7. Avansăm timpul și așteptăm
+            // Avansăm timpul cu 10 minute pentru următorul punct
+            simulatedTime += 10 * 60 * 1000;
+
+            // Așteptăm 2 secunde în timp real (pentru demo, ca să nu aștepți 10 min reale)
+            TimeUnit.SECONDS.sleep(2);
         }
     }
 }

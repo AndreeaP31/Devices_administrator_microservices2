@@ -1,18 +1,21 @@
-FROM maven:3.9 AS build
+# STAGE 1: Build (Compilare)
+FROM maven:3.8.5-openjdk-17 AS builder
 
-ENV TZ=UTC
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-ENV CATALINA_OPTS="-Duser.timezone=UTC"
+# Copiem sursele și pom.xml în container
+COPY ./src /usr/src/app/src
+COPY ./pom.xml /usr/src/app
 
-COPY ./pom.xml /demo/pom.xml
-WORKDIR /demo
-RUN mvn dependency:go-offline
-COPY ./src/ /demo/src
-WORKDIR /demo
-RUN mvn clean install -DskipTests
+# Setăm directorul de lucru
+WORKDIR /usr/src/app
 
-FROM eclipse-temurin:25
-WORKDIR /demo
-COPY --from=build /demo/target/demo-0.0.1-SNAPSHOT.jar /demo/demo.jar
-EXPOSE 8080
-CMD ["java", "-jar", "demo.jar"]
+# Rulăm comanda de build (fără teste pentru viteză)
+RUN mvn clean package -DskipTests
+
+# STAGE 2: Run (Rulare efectivă)
+FROM openjdk:17-jdk-slim
+
+# Copiem doar JAR-ul rezultat din prima etapă
+COPY --from=builder /usr/src/app/target/*.jar app.jar
+
+# Comanda de start
+ENTRYPOINT ["java", "-jar", "/app.jar"]
