@@ -33,8 +33,6 @@ public class DeviceService {
     // Folosim RestTemplate doar pentru a obține nume (read-only), nu pentru validări critice
     private final RestTemplate restTemplate = new RestTemplate();
 
-    @Value("${user.service.url}")
-    private String userServiceUrl;
 
     @Autowired
     public DeviceService(DeviceRepository deviceRepository,
@@ -93,18 +91,10 @@ public class DeviceService {
                     .map(DeviceUserRelation::getUserId)
                     .toList();
 
-            List<String> userNames = userIds.stream().map(userId -> {
-                try {
-                    String url = userServiceUrl + "/users/" + userId;
-                    Map user = restTemplate.getForObject(url, Map.class);
-                    if (user != null && user.get("name") != null) {
-                        return user.get("name").toString();
-                    }
-                    return "(unknown)";
-                } catch (Exception e) {
-                    return "(unknown)";
-                }
-            }).toList();
+            // Fără REST, nu știm numele real. Folosim ID-ul.
+            List<String> userNames = userIds.stream()
+                    .map(UUID::toString)
+                    .collect(Collectors.toList());
 
             return new DeviceWithUsersDTO(
                     device.getId(),
@@ -119,22 +109,15 @@ public class DeviceService {
         List<DeviceUserRelation> relations = relationRepository.findAll();
 
         return relations.stream().map(relation -> {
-            String userName = "(unknown)";
-            try {
-                String url = userServiceUrl + "/users/" + relation.getUserId();
-                Map user = restTemplate.getForObject(url, Map.class);
-                if (user != null && user.get("name") != null) {
-                    userName = user.get("name").toString();
-                }
-            } catch (Exception e) {
-                // User Service might be down, but listing relations still works (with unknown names)
-            }
+            // Nu avem numele userului local, folosim ID-ul
+            String userName = relation.getUserId().toString();
 
+            // Numele device-ului îl avem local
             String deviceName = "(unknown)";
             try {
-                Device device = deviceRepository.findById(relation.getDeviceId()).orElse(null);
-                if (device != null) {
-                    deviceName = device.getName();
+                Optional<Device> deviceOpt = deviceRepository.findById(relation.getDeviceId());
+                if (deviceOpt.isPresent()) {
+                    deviceName = deviceOpt.get().getName();
                 }
             } catch (Exception e) {
                 deviceName = "(unknown)";
@@ -144,12 +127,11 @@ public class DeviceService {
                     relation.getId(),
                     relation.getUserId(),
                     relation.getDeviceId(),
-                    userName,
+                    userName, // Aici va fi UUID-ul acum
                     deviceName
             );
         }).toList();
     }
-
     public UUID assignUserToDevice(DeviceUserRelationDTO dto) {
         // 🔥 Validare LOCALĂ (folosind tabela sincronizată prin RabbitMQ)
         if (!localUserRepository.existsById(dto.getUserId())) {
