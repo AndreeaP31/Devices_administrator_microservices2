@@ -16,9 +16,11 @@ public class UserSyncConsumer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(UserSyncConsumer.class);
     private final LocalUserRepository localUserRepository;
+    private final DeviceService deviceService;
 
-    public UserSyncConsumer(LocalUserRepository localUserRepository) {
+    public UserSyncConsumer(LocalUserRepository localUserRepository, DeviceService deviceService) {
         this.localUserRepository = localUserRepository;
+        this.deviceService = deviceService;
     }
 
     @RabbitListener(queues = RabbitMQConfig.SYNC_QUEUE)
@@ -34,6 +36,8 @@ public class UserSyncConsumer {
 
             } else if (routingKey.contains("deleted")) {
                 // DELETE
+                LOGGER.info("Processing DELETE for user: {}", userDTO.getId());
+                deviceService.deleteRelationsForUser(userDTO.getId());
                 if (localUserRepository.existsById(userDTO.getId())) {
                     localUserRepository.deleteById(userDTO.getId());
                     LOGGER.info("User deleted from local sync: {}", userDTO.getId());

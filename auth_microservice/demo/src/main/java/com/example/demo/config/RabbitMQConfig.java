@@ -1,5 +1,8 @@
 package com.example.demo.config;
 
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -10,7 +13,7 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class RabbitMQConfig {
-
+    public static final String CLEANUP_QUEUE = "auth-cleanup-queue";
     public static final String EXCHANGE_NAME = "energy-platform-exchange";
     public static final String ROUTING_KEY_REGISTER = "auth.register";
 
@@ -29,5 +32,15 @@ public class RabbitMQConfig {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter());
         return template;
+    }
+    @Bean
+    public Queue cleanupQueue() {
+        return new Queue(CLEANUP_QUEUE, true);
+    }
+
+    @Bean
+    public Binding bindingCleanup(Queue cleanupQueue, TopicExchange exchange) {
+        // Ascultă user.deleted pentru a șterge contul de login
+        return BindingBuilder.bind(cleanupQueue).to(exchange).with("user.deleted");
     }
 }
