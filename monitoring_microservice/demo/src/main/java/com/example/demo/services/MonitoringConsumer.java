@@ -25,13 +25,16 @@ public class MonitoringConsumer {
 
     private final MonitoredDeviceRepository deviceRepository;
     private final MeasurementRepository measurementRepository;
-    private final ObjectMapper objectMapper; // Jackson Mapper pentru conversie manuală
+    private final MonitoringService monitoringService; // 🔥 Injectăm serviciul de calcul
+    private final ObjectMapper objectMapper;
 
     public MonitoringConsumer(MonitoredDeviceRepository deviceRepository,
                               MeasurementRepository measurementRepository,
+                              MonitoringService monitoringService,
                               ObjectMapper objectMapper) {
         this.deviceRepository = deviceRepository;
         this.measurementRepository = measurementRepository;
+        this.monitoringService = monitoringService;
         this.objectMapper = objectMapper;
     }
 
@@ -42,22 +45,22 @@ public class MonitoringConsumer {
 
         try {
             if (routingKey.startsWith("device.created") || routingKey.startsWith("device.updated")) {
-                // 1. Device nou sau modificat
+                // 1. Device nou sau modificat (Sincronizare DB local)
                 DeviceDTO dto = objectMapper.readValue(body, DeviceDTO.class);
                 handleDeviceUpsert(dto);
 
             } else if (routingKey.startsWith("device.assigned")) {
-                // 2. Device asignat unui user
+                // 2. Device asignat unui user (Actualizare legătură)
                 DeviceUserRelationDTO dto = objectMapper.readValue(body, DeviceUserRelationDTO.class);
                 handleDeviceAssign(dto);
 
             } else if (routingKey.startsWith("device.deleted")) {
-                // 3. Device șters (primim doar UUID)
+                // 3. Device șters
                 UUID deviceId = objectMapper.readValue(body, UUID.class);
                 handleDeviceDelete(deviceId);
 
             } else if (routingKey.startsWith("sensor.measurement")) {
-                // 4. Date de la senzor
+                // 4. Date de la senzor (Procesare consum)
                 MeasurementDTO dto = objectMapper.readValue(body, MeasurementDTO.class);
                 handleSensorData(dto);
             }
@@ -99,7 +102,7 @@ public class MonitoringConsumer {
     private void handleSensorData(MeasurementDTO dto) {
         LOGGER.info("Received measurement: {} for device {}", dto.getMeasurementValue(), dto.getDeviceId());
 
-        // 1. Salvăm măsurătoarea brută (opțional, dar util pt istoric)
+        // 1. Salvăm măsurătoarea brută (Cerut pentru istoric detaliat)
         Measurement measurement = new Measurement(
                 dto.getTimestamp(),
                 dto.getDeviceId(),
@@ -107,7 +110,7 @@ public class MonitoringConsumer {
         );
         measurementRepository.save(measurement);
 
-        // 2. AICI va urma logica de calcul orar (Următorul pas)
-        // checkHourlyConsumption(dto);
+        // 2. 🔥 Apelăm logica de business: Calcul Consum Orar + Verificare Alertă
+        monitoringService.processMeasurement(dto);
     }
 }
