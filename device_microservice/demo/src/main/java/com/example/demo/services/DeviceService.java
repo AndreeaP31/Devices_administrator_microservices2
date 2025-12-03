@@ -1,6 +1,6 @@
 package com.example.demo.services;
 
-
+import com.example.demo.config.RabbitMQConfig;
 import com.example.demo.dtos.*;
 import com.example.demo.dtos.builders.DeviceBuilder;
 import com.example.demo.entities.Device;
@@ -8,13 +8,14 @@ import com.example.demo.entities.DeviceUserRelation;
 import com.example.demo.handlers.exceptions.model.ResourceNotFoundException;
 import com.example.demo.repositories.DeviceRepository;
 import com.example.demo.repositories.DeviceUserRelationRepository;
+import com.example.demo.repositories.LocalUserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
@@ -23,15 +24,27 @@ import java.util.stream.Collectors;
 @Service
 public class DeviceService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DeviceService.class);
-    private final DeviceRepository deviceRepository;
 
+    private final DeviceRepository deviceRepository;
+    private final DeviceUserRelationRepository relationRepository;
+    private final LocalUserRepository localUserRepository;
+    private final RabbitTemplate rabbitTemplate;
+
+    // Folosim RestTemplate doar pentru a obține nume (read-only), nu pentru validări critice
     private final RestTemplate restTemplate = new RestTemplate();
-    @Value("${user.service.url}") // Injectează valoarea din proprietăți
+
+    @Value("${user.service.url}")
     private String userServiceUrl;
+
     @Autowired
-    public DeviceService(DeviceRepository deviceRepository, DeviceUserRelationRepository relationRepository) {
+    public DeviceService(DeviceRepository deviceRepository,
+                         DeviceUserRelationRepository relationRepository,
+                         LocalUserRepository localUserRepository,
+                         RabbitTemplate rabbitTemplate) {
         this.deviceRepository = deviceRepository;
         this.relationRepository = relationRepository;
+        this.localUserRepository = localUserRepository;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     public List<DeviceDTO> findDevices() {
@@ -42,33 +55,48 @@ public class DeviceService {
     }
 
     public DeviceDetailsDTO findDeviceById(UUID id) {
-        Optional<Device> prosumerOptional = deviceRepository.findById(id);
-        if (!prosumerOptional.isPresent()) {
+        Optional<Device> deviceOptional = deviceRepository.findById(id);
+        if (!deviceOptional.isPresent()) {
             LOGGER.error("Device with id {} was not found in db", id);
             throw new ResourceNotFoundException(Device.class.getSimpleName() + " with id: " + id);
         }
-        return DeviceBuilder.toDeviceDetailsDTO(prosumerOptional.get());
+        return DeviceBuilder.toDeviceDetailsDTO(deviceOptional.get());
     }
-    public List<DeviceWithUsersDTO> getDevicesWithUsers() {
 
+    public UUID insert(DeviceDetailsDTO deviceDTO) {
+        Device device = DeviceBuilder.toEntity(deviceDTO);
+        device = deviceRepository.save(device);
+        LOGGER.debug("Device inserted: {}", device.getId());
+
+        // 🔥 Trimitem eveniment "device.created" către Monitoring Service
+        try {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    "device.created",
+                    deviceDTO
+            );
+        } catch (Exception e) {
+            LOGGER.error("Failed to send device.created event", e);
+        }
+
+        return device.getId();
+    }
+
+    // Această metodă încă depinde de User Service pentru NUME (display only)
+    // Este ok, deoarece LocalUser are doar ID-uri.
+    public List<DeviceWithUsersDTO> getDevicesWithUsers() {
         List<Device> devices = deviceRepository.findAll();
 
         return devices.stream().map(device -> {
-
-            // relațiile pentru device
             List<DeviceUserRelation> relations = relationRepository.findByDeviceId(device.getId());
-
-            // extragem userId-urile
             List<UUID> userIds = relations.stream()
                     .map(DeviceUserRelation::getUserId)
                     .toList();
 
-            // apelăm user-service pentru numele userilor
             List<String> userNames = userIds.stream().map(userId -> {
                 try {
                     String url = userServiceUrl + "/users/" + userId;
                     Map user = restTemplate.getForObject(url, Map.class);
-
                     if (user != null && user.get("name") != null) {
                         return user.get("name").toString();
                     }
@@ -84,43 +112,30 @@ public class DeviceService {
                     device.getMaxCons(),
                     userNames
             );
-
         }).toList();
     }
 
     public List<RelationDTO> getAllRelationsWithNames() {
-
         List<DeviceUserRelation> relations = relationRepository.findAll();
 
         return relations.stream().map(relation -> {
-
-            // -------------------------
-            // 1. Luăm numele userului
-            // -------------------------
             String userName = "(unknown)";
             try {
                 String url = userServiceUrl + "/users/" + relation.getUserId();
                 Map user = restTemplate.getForObject(url, Map.class);
-
                 if (user != null && user.get("name") != null) {
                     userName = user.get("name").toString();
                 }
             } catch (Exception e) {
-                userName = "(unknown)";
+                // User Service might be down, but listing relations still works (with unknown names)
             }
 
-            // -------------------------
-            // 2. Luăm numele device-ului
-            // -------------------------
             String deviceName = "(unknown)";
             try {
-                Device device = deviceRepository.findById(relation.getDeviceId())
-                        .orElse(null);
-
+                Device device = deviceRepository.findById(relation.getDeviceId()).orElse(null);
                 if (device != null) {
                     deviceName = device.getName();
                 }
-
             } catch (Exception e) {
                 deviceName = "(unknown)";
             }
@@ -132,47 +147,32 @@ public class DeviceService {
                     userName,
                     deviceName
             );
-
         }).toList();
     }
 
-
-    public UUID insert(DeviceDetailsDTO DeviceDTO) {
-        Device Device = DeviceBuilder.toEntity(DeviceDTO);
-        Device = deviceRepository.save(Device);
-        LOGGER.debug("Device with id {} was inserted in db", Device.getId());
-        return Device.getId();
-    }
-
-    private final DeviceUserRelationRepository relationRepository;
-
-
     public UUID assignUserToDevice(DeviceUserRelationDTO dto) {
-
-        String userValidationUrl = userServiceUrl + "/users/" + dto.getUserId();
-        try {
-            restTemplate.getForEntity(userValidationUrl, String.class);
-            LOGGER.info("Validation successful: User with ID {} exists.", dto.getUserId());
-        } catch (HttpClientErrorException.NotFound e) {
-            LOGGER.error("Validation failed: User with ID {} not found.", dto.getUserId());
-            throw new ResourceNotFoundException("User with id: " + dto.getUserId() + " not found.");
-        } catch (Exception e) {
-            LOGGER.error("Error communicating with User-Service", e);
-            throw new IllegalStateException("Could not contact User-Service for validation. Please try again later.");
+        // 🔥 Validare LOCALĂ (folosind tabela sincronizată prin RabbitMQ)
+        if (!localUserRepository.existsById(dto.getUserId())) {
+            throw new ResourceNotFoundException("User " + dto.getUserId() + " not found locally.");
         }
-
         if (!deviceRepository.existsById(dto.getDeviceId())) {
-            LOGGER.error("Validation failed: Device with ID {} not found.", dto.getDeviceId());
-            throw new ResourceNotFoundException("Device with id: " + dto.getDeviceId() + " not found.");
+            throw new ResourceNotFoundException("Device " + dto.getDeviceId() + " not found.");
         }
 
-        DeviceUserRelation relation = new DeviceUserRelation(
-                dto.getUserId(),
-                dto.getDeviceId()
-        );
-
+        DeviceUserRelation relation = new DeviceUserRelation(dto.getUserId(), dto.getDeviceId());
         relation = relationRepository.save(relation);
-        LOGGER.debug("Successfully assigned user {} to device {}.", dto.getUserId(), dto.getDeviceId());
+
+        // 🔥 Trimitem eveniment "device.assigned" către Monitoring Service
+        try {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    "device.assigned",
+                    dto
+            );
+        } catch (Exception e) {
+            LOGGER.error("Failed to send device.assigned event", e);
+        }
+
         return relation.getId();
     }
 
@@ -191,6 +191,7 @@ public class DeviceService {
                 .map(DeviceBuilder::toDeviceDTO)
                 .collect(Collectors.toList());
     }
+
     public List<DeviceUserRelation> getDevicesForUser(UUID userId) {
         return relationRepository.findByUserId(userId);
     }
@@ -206,21 +207,29 @@ public class DeviceService {
     @Transactional
     public void deleteDevice(UUID deviceId) {
         if (!deviceRepository.existsById(deviceId)) {
-            LOGGER.error("Delete failed: Device with ID {} not found.", deviceId);
-            throw new ResourceNotFoundException("Device with id: " + deviceId + " not found.");
+            throw new ResourceNotFoundException("Device not found");
         }
 
         relationRepository.deleteByDeviceId(deviceId);
-        LOGGER.debug("Deleted all relations for device ID {}.", deviceId);
-
         deviceRepository.deleteById(deviceId);
-        LOGGER.debug("Successfully deleted device with ID {}.", deviceId);
+
+        // 🔥 Trimitem eveniment "device.deleted"
+        try {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    "device.deleted",
+                    deviceId
+            );
+        } catch (Exception e) {
+            LOGGER.error("Failed to send device.deleted event", e);
+        }
     }
 
     public void deleteRelationsForUser(UUID userId) {
         relationRepository.deleteByUserId(userId);
         LOGGER.debug("Deleted all relations for user ID {}.", userId);
     }
+
     @Transactional
     public DeviceDetailsDTO updateDevice(UUID id, DeviceDetailsDTO deviceDetailsDTO) {
         Device deviceToUpdate = deviceRepository.findById(id)
@@ -233,10 +242,17 @@ public class DeviceService {
         deviceToUpdate.setMaxCons(deviceDetailsDTO.getMaxCons());
 
         Device updatedDevice = deviceRepository.save(deviceToUpdate);
-        LOGGER.debug("Successfully updated device with ID {}.", updatedDevice.getId());
 
+        // Opțional: Poți trimite și "device.updated" dacă Monitoring are nevoie de noul maxCons
+        try {
+            // Reutilizăm DTO-ul, setăm ID-ul corect
+            DeviceDetailsDTO eventDto = new DeviceDetailsDTO(updatedDevice.getId(), updatedDevice.getName(), updatedDevice.getMaxCons());
+            rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, "device.updated", eventDto);
+        } catch(Exception e) {
+            LOGGER.error("Failed update event", e);
+        }
+
+        LOGGER.debug("Successfully updated device with ID {}.", updatedDevice.getId());
         return DeviceBuilder.toDeviceDetailsDTO(updatedDevice);
     }
-
-
 }

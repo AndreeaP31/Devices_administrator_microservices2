@@ -1,6 +1,7 @@
 package com.example.demo.services;
 
 
+import com.example.demo.config.RabbitMQConfig;
 import com.example.demo.dtos.UserDTO;
 import com.example.demo.dtos.UserDetailsDTO;
 import com.example.demo.dtos.builders.UserBuilder;
@@ -10,6 +11,7 @@ import com.example.demo.handlers.exceptions.model.ResourceNotFoundException;
 import com.example.demo.repositories.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -31,9 +33,11 @@ public class UserService {
     private String deviceServiceUrl;
     @Value("${auth.service.url}")
     private String authServiceUrl;
+    private final RabbitTemplate rabbitTemplate;
     @Autowired
-    public UserService(UserRepository userRepository) {
+    public UserService(UserRepository userRepository, RabbitTemplate rabbitTemplate) {
         this.userRepository = userRepository;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     public List<UserDTO> findUsers() {
@@ -51,56 +55,124 @@ public class UserService {
         }
         return UserBuilder.toUserDetailsDTO(prosumerOptional.get());
     }
+//    @Transactional
+//    public UserDetailsDTO updateUser(UUID id, UserDetailsDTO userDetailsDTO) {
+//        User userToUpdate = userRepository.findById(id)
+//                .orElseThrow(() -> {
+//                    LOGGER.error("Update failed: User with ID {} not found.", id);
+//                    return new ResourceNotFoundException("User with id: " + id + " not found.");
+//                });
+//
+//        userToUpdate.setName(userDetailsDTO.getName());
+//
+//        User updatedUser = userRepository.save(userToUpdate);
+//        LOGGER.debug("Successfully updated user with ID {}.", updatedUser.getId());
+//
+//        return UserBuilder.toUserDetailsDTO(updatedUser);
+//    }
     @Transactional
     public UserDetailsDTO updateUser(UUID id, UserDetailsDTO userDetailsDTO) {
-        User userToUpdate = userRepository.findById(id)
-                .orElseThrow(() -> {
-                    LOGGER.error("Update failed: User with ID {} not found.", id);
-                    return new ResourceNotFoundException("User with id: " + id + " not found.");
-                });
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + id));
 
-        userToUpdate.setName(userDetailsDTO.getName());
+        user.setName(userDetailsDTO.getName());
+        User updatedUser = userRepository.save(user);
 
-        User updatedUser = userRepository.save(userToUpdate);
-        LOGGER.debug("Successfully updated user with ID {}.", updatedUser.getId());
+        // 🔥 SEND user.updated EVENT
+        try {
+            UserDTO syncData = new UserDTO(updatedUser.getId(), updatedUser.getName());
+            rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, "user.updated", syncData);
+        } catch (Exception e) { LOGGER.error("Failed to send update event", e); }
 
         return UserBuilder.toUserDetailsDTO(updatedUser);
     }
 
-    public UUID insert(UserDetailsDTO UserDTO) {
-        User user = UserBuilder.toEntity(UserDTO);
+    public UUID insert(UserDetailsDTO userDetails) {
+        User user = new User(userDetails.getName());
+        // Dacă vine un ID (de la Auth), îl setăm. Dacă nu, se generează automat (pentru teste admin manuale)
+        if (userDetails.getId() != null) {
+            user.setId(userDetails.getId());
+        } else {
+            user.setId(UUID.randomUUID()); // Generăm manual dacă lipsește
+        }
+
         user = userRepository.save(user);
-        LOGGER.debug("User with id {} was inserted in db", user.getId());
+        LOGGER.debug("User inserted: {}", user.getId());
+
+        // 🔥 SEND user.created EVENT
+        try {
+            UserDTO syncData = new UserDTO(user.getId(), user.getName());
+            rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, "user.created", syncData);
+            LOGGER.info("Sent user.created event for {}", user.getId());
+        } catch (Exception e) {
+            LOGGER.error("Failed to send user.created event", e);
+        }
+
         return user.getId();
     }
+//    public UUID insert(UserDetailsDTO UserDTO) {
+//        User user = UserBuilder.toEntity(UserDTO);
+//        user = userRepository.save(user);
+//        LOGGER.debug("User with id {} was inserted in db", user.getId());
+//        return user.getId();
+//    }
+
     @Transactional
     public void deleteUser(UUID userId) {
         if (!userRepository.existsById(userId)) {
-            throw new ResourceNotFoundException("User with id: " + userId + " not found.");
+            throw new ResourceNotFoundException("User not found: " + userId);
         }
 
-        // 1️⃣ Ștergem credentialele din Auth-Service
+        // 1. Ștergere credentiale (Auth) - Sincron REST (poate rămâne așa sau mutat pe async)
         try {
             restTemplate.delete(authServiceUrl + "/auth/internal/usercred/" + userId);
-            LOGGER.debug("Credentials deleted for user {}", userId);
         } catch (Exception e) {
-            LOGGER.error("Could not delete credentials for user {}", userId, e);
-            throw new IllegalStateException("Auth-Service unavailable, cannot delete user.");
+            LOGGER.error("Auth service delete error", e);
         }
 
-        // 2️⃣ Ștergem relațiile device-user în Device-Service
-        try {
-            restTemplate.delete(deviceServiceUrl + "/device/internal/relations/" + userId);
-            LOGGER.debug("Device relations deleted for user {}", userId);
-        } catch (Exception e) {
-            LOGGER.error("Could not delete device relations for user {}", userId, e);
-            throw new IllegalStateException("Device-Service unavailable, cannot delete user.");
-        }
-
-        // 3️⃣ Ștergem user-ul efectiv
+        // 2. Ștergere din DB propriu
         userRepository.deleteById(userId);
-        LOGGER.debug("Successfully deleted user {}", userId);
+
+        // 3. 🔥 SEND user.deleted EVENT (Către Device și Monitoring)
+        // Device Service va asculta și va șterge mapările/userul local
+        try {
+            // Putem trimite un DTO simplu sau doar ID-ul într-un obiect
+            UserDTO syncData = new UserDTO();
+            syncData.setId(userId);
+            rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, "user.deleted", syncData);
+            LOGGER.info("Sent user.deleted event for {}", userId);
+        } catch (Exception e) {
+            LOGGER.error("Failed to send delete event", e);
+        }
     }
+//    @Transactional
+//    public void deleteUser(UUID userId) {
+//        if (!userRepository.existsById(userId)) {
+//            throw new ResourceNotFoundException("User with id: " + userId + " not found.");
+//        }
+//
+//        // 1️⃣ Ștergem credentialele din Auth-Service
+//        try {
+//            restTemplate.delete(authServiceUrl + "/auth/internal/usercred/" + userId);
+//            LOGGER.debug("Credentials deleted for user {}", userId);
+//        } catch (Exception e) {
+//            LOGGER.error("Could not delete credentials for user {}", userId, e);
+//            throw new IllegalStateException("Auth-Service unavailable, cannot delete user.");
+//        }
+//
+//        // 2️⃣ Ștergem relațiile device-user în Device-Service
+//        try {
+//            restTemplate.delete(deviceServiceUrl + "/device/internal/relations/" + userId);
+//            LOGGER.debug("Device relations deleted for user {}", userId);
+//        } catch (Exception e) {
+//            LOGGER.error("Could not delete device relations for user {}", userId, e);
+//            throw new IllegalStateException("Device-Service unavailable, cannot delete user.");
+//        }
+//
+//        // 3️⃣ Ștergem user-ul efectiv
+//        userRepository.deleteById(userId);
+//        LOGGER.debug("Successfully deleted user {}", userId);
+//    }
 
 
 

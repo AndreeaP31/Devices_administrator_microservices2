@@ -1,11 +1,13 @@
 package com.example.demo.services;
 
+import com.example.demo.config.RabbitMQConfig;
 import com.example.demo.dtos.*;
 import com.example.demo.entities.Credential;
 import com.example.demo.repositories.CredentialRepository;
 import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -27,23 +29,22 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RestTemplate restTemplate = new RestTemplate();
-
+    private final RabbitTemplate rabbitTemplate;
     @Value("${user.service.url}")
     private String userServiceUrl;
 
     public AuthService(
             CredentialRepository credentialRepository,
             PasswordEncoder passwordEncoder,
-            JwtService jwtService) {
+            JwtService jwtService,
+            RabbitTemplate rabbitTemplate) {
 
         this.credentialRepository = credentialRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
-    // -----------------------------
-    // REGISTER – SAGA ORCHESTRATION
-    // -----------------------------
     @Transactional
     public AuthResponseDTO register(RegisterRequestDTO request) {
 
@@ -51,52 +52,34 @@ public class AuthService {
             throw new IllegalArgumentException("Username already exists");
         }
 
-        // 1) Creează user în user-service
-        UserDTO userRequest = new UserDTO();
-        userRequest.setName(request.getName());
+        // 1. Generăm ID-ul aici, pentru a fi consistent între Auth și User
+        UUID userId = UUID.randomUUID();
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        HttpEntity<UserDTO> httpEntity = new HttpEntity<>(userRequest, headers);
-
-        UserDTO createdUser;
-
-        try {
-            createdUser = restTemplate.postForObject(
-                    userServiceUrl + "/users",
-                    httpEntity,
-                    UserDTO.class
-            );
-        } catch (Exception e) {
-            LOGGER.error("User-Service unavailable", e);
-            throw new IllegalStateException("Could not create user in User Service");
-        }
-
-        if (createdUser == null || createdUser.getId() == null) {
-            throw new IllegalStateException("User service returned invalid response");
-        }
-
+        // 2. Salvăm credentialele
         Credential credential = new Credential(
-                createdUser.getId(),
+                userId,
                 request.getUsername(),
                 passwordEncoder.encode(request.getPassword()),
                 request.getRoleAsEnum()
         );
+        credentialRepository.save(credential);
+
+        // 3. Trimitem mesaj Asincron către User Service
+        UserDTO userPayload = new UserDTO(userId, request.getName());
 
         try {
-            credentialRepository.save(credential);
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    RabbitMQConfig.ROUTING_KEY_REGISTER, // "auth.register"
+                    userPayload
+            );
+            LOGGER.info("Sent auth.register event for user {}", userId);
         } catch (Exception e) {
-            LOGGER.error("Failed to save credential, rolling back user creation...", e);
-            try {
-                restTemplate.delete(userServiceUrl + "/users/" + createdUser.getId());
-            } catch (Exception ex) {
-                LOGGER.error("SAGA ROLLBACK FAILED! Inconsistent state.", ex);
-            }
-            throw new IllegalStateException("Could not save credential");
+            LOGGER.error("Failed to send RabbitMQ message", e);
+            // Opțional: throw exception pentru rollback
         }
 
-        // 3) Generează token
+        // 4. Returnăm token-ul
         String token = jwtService.generateToken(
                 credential.getUserId(),
                 credential.getUsername(),
@@ -110,6 +93,76 @@ public class AuthService {
                 credential.getRole()
         );
     }
+
+    // -----------------------------
+    // REGISTER – SAGA ORCHESTRATION
+    // -----------------------------
+//    @Transactional
+//    public AuthResponseDTO register(RegisterRequestDTO request) {
+//
+//        if (credentialRepository.existsByUsername(request.getUsername())) {
+//            throw new IllegalArgumentException("Username already exists");
+//        }
+//
+//        // 1) Creează user în user-service
+//        UserDTO userRequest = new UserDTO();
+//        userRequest.setName(request.getName());
+//
+//        HttpHeaders headers = new HttpHeaders();
+//        headers.setContentType(MediaType.APPLICATION_JSON);
+//
+//        HttpEntity<UserDTO> httpEntity = new HttpEntity<>(userRequest, headers);
+//
+//        UserDTO createdUser;
+//
+//        try {
+//            createdUser = restTemplate.postForObject(
+//                    userServiceUrl + "/users",
+//                    httpEntity,
+//                    UserDTO.class
+//            );
+//        } catch (Exception e) {
+//            LOGGER.error("User-Service unavailable", e);
+//            throw new IllegalStateException("Could not create user in User Service");
+//        }
+//
+//        if (createdUser == null || createdUser.getId() == null) {
+//            throw new IllegalStateException("User service returned invalid response");
+//        }
+//
+//        Credential credential = new Credential(
+//                createdUser.getId(),
+//                request.getUsername(),
+//                passwordEncoder.encode(request.getPassword()),
+//                request.getRoleAsEnum()
+//        );
+//
+//        try {
+//            credentialRepository.save(credential);
+//        } catch (Exception e) {
+//            LOGGER.error("Failed to save credential, rolling back user creation...", e);
+//            try {
+//                restTemplate.delete(userServiceUrl + "/users/" + createdUser.getId());
+//            } catch (Exception ex) {
+//                LOGGER.error("SAGA ROLLBACK FAILED! Inconsistent state.", ex);
+//            }
+//            throw new IllegalStateException("Could not save credential");
+//        }
+//
+//        // 3) Generează token
+//        String token = jwtService.generateToken(
+//                credential.getUserId(),
+//                credential.getUsername(),
+//                credential.getRole()
+//        );
+//
+//        return new AuthResponseDTO(
+//                token,
+//                credential.getUserId(),
+//                credential.getUsername(),
+//                credential.getRole()
+//        );
+//    }
 
     // -----------------------------
     // LOGIN
@@ -125,35 +178,43 @@ public class AuthService {
                 .toList();
     }
 
-
     public AuthResponseDTO login(LoginRequestDTO request) {
-
-        Optional<Credential> credentialOpt =
-                credentialRepository.findByUsername(request.getUsername());
-
-        if (credentialOpt.isEmpty()) {
+        Optional<Credential> credentialOpt = credentialRepository.findByUsername(request.getUsername());
+        if (credentialOpt.isEmpty() || !passwordEncoder.matches(request.getPassword(), credentialOpt.get().getPasswordHash())) {
             throw new IllegalArgumentException("Invalid username or password");
         }
-
         Credential credential = credentialOpt.get();
-
-        if (!passwordEncoder.matches(request.getPassword(), credential.getPasswordHash())) {
-            throw new IllegalArgumentException("Invalid username or password");
-        }
-
-        String token = jwtService.generateToken(
-                credential.getUserId(),
-                credential.getUsername(),
-                credential.getRole()
-        );
-
-        return new AuthResponseDTO(
-                token,
-                credential.getUserId(),
-                credential.getUsername(),
-                credential.getRole()
-        );
+        String token = jwtService.generateToken(credential.getUserId(), credential.getUsername(), credential.getRole());
+        return new AuthResponseDTO(token, credential.getUserId(), credential.getUsername(), credential.getRole());
     }
+//    public AuthResponseDTO login(LoginRequestDTO request) {
+//
+//        Optional<Credential> credentialOpt =
+//                credentialRepository.findByUsername(request.getUsername());
+//
+//        if (credentialOpt.isEmpty()) {
+//            throw new IllegalArgumentException("Invalid username or password");
+//        }
+//
+//        Credential credential = credentialOpt.get();
+//
+//        if (!passwordEncoder.matches(request.getPassword(), credential.getPasswordHash())) {
+//            throw new IllegalArgumentException("Invalid username or password");
+//        }
+//
+//        String token = jwtService.generateToken(
+//                credential.getUserId(),
+//                credential.getUsername(),
+//                credential.getRole()
+//        );
+//
+//        return new AuthResponseDTO(
+//                token,
+//                credential.getUserId(),
+//                credential.getUsername(),
+//                credential.getRole()
+//        );
+//    }
 
     // -----------------------------
     // TOKEN HELPERS

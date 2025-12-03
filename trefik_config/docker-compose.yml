@@ -1,6 +1,20 @@
 version: '3.9'
 
 services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - demo_net
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   user-db:
     image: postgres:15-alpine  # ✅ Versiune specifică
     container_name: user-db
@@ -83,6 +97,8 @@ services:
     depends_on:
       user-db:
         condition: service_healthy
+      rabbitmq: # ✅ Așteaptă să pornească RabbitMQ
+        condition: service_healthy
 
   auth-service:
     build:
@@ -106,6 +122,8 @@ services:
         condition: service_healthy
       user-service:
         condition: service_started
+      rabbitmq: # ✅ Așteaptă să pornească RabbitMQ
+        condition: service_healthy
 
   device-service:
     build:
@@ -125,6 +143,8 @@ services:
       - demo_net
     depends_on:
       device-db:
+        condition: service_healthy
+      rabbitmq: # ✅ Așteaptă să pornească RabbitMQ
         condition: service_healthy
 
   traefik:
@@ -173,7 +193,6 @@ services:
       - demo_net
     depends_on:
       - gateway-service
-
 
 volumes:
   user_db_data:
