@@ -133,7 +133,7 @@ public class DeviceService {
         }).toList();
     }
     public UUID assignUserToDevice(DeviceUserRelationDTO dto) {
-        // 🔥 Validare LOCALĂ (folosind tabela sincronizată prin RabbitMQ)
+        // Validări existente...
         if (!localUserRepository.existsById(dto.getUserId())) {
             throw new ResourceNotFoundException("User " + dto.getUserId() + " not found locally.");
         }
@@ -144,20 +144,18 @@ public class DeviceService {
         DeviceUserRelation relation = new DeviceUserRelation(dto.getUserId(), dto.getDeviceId());
         relation = relationRepository.save(relation);
 
-        // 🔥 Trimitem eveniment "device.assigned" către Monitoring Service
+        LOGGER.info("Device {} assigned to User {}", dto.getDeviceId(), dto.getUserId());
+
+        // 🔥 TRIMITERE EVENIMENT CĂTRE RABBITMQ
         try {
-            rabbitTemplate.convertAndSend(
-                    RabbitMQConfig.EXCHANGE_NAME,
-                    "device.assigned",
-                    dto
-            );
+            // Asigură-te că cheia este exact "device.assigned"
+            rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, "device.assigned", dto);
         } catch (Exception e) {
             LOGGER.error("Failed to send device.assigned event", e);
         }
 
         return relation.getId();
     }
-
     public List<DeviceDTO> findDevicesByUserId(UUID userId) {
         List<DeviceUserRelation> relations = relationRepository.findByUserId(userId);
         if (relations.isEmpty()) {

@@ -24,4 +24,13 @@ public class MonitoringController {
         List<HourlyConsumption> history = monitoringService.getHourlyConsumption(deviceId);
         return ResponseEntity.ok(history);
     }
+    // monitoring_microservice/.../controllers/MonitoringController.java
+
+    @GetMapping("/{deviceId}/history")
+    public ResponseEntity<List<HourlyConsumption>> getDailyConsumption(
+            @PathVariable UUID deviceId,
+            @RequestParam("date") long date) { // Primim data ca timestamp
+
+        return ResponseEntity.ok(monitoringService.getConsumptionForDay(deviceId, date));
+    }
 }

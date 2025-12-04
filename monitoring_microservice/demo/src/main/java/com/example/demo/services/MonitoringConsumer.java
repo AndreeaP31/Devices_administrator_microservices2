@@ -4,10 +4,10 @@ import com.example.demo.config.RabbitMQConfig;
 import com.example.demo.dtos.DeviceDTO;
 import com.example.demo.dtos.DeviceUserRelationDTO;
 import com.example.demo.dtos.MeasurementDTO;
-import com.example.demo.entities.MonitoredDevice;
 import com.example.demo.entities.Measurement;
-import com.example.demo.repositories.MonitoredDeviceRepository;
+import com.example.demo.entities.MonitoredDevice;
 import com.example.demo.repositories.MeasurementRepository;
+import com.example.demo.repositories.MonitoredDeviceRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,7 +25,7 @@ public class MonitoringConsumer {
 
     private final MonitoredDeviceRepository deviceRepository;
     private final MeasurementRepository measurementRepository;
-    private final MonitoringService monitoringService; // 🔥 Injectăm serviciul de calcul
+    private final MonitoringService monitoringService;
     private final ObjectMapper objectMapper;
 
     public MonitoringConsumer(MonitoredDeviceRepository deviceRepository,
@@ -45,51 +45,51 @@ public class MonitoringConsumer {
 
         try {
             if (routingKey.startsWith("device.created") || routingKey.startsWith("device.updated")) {
-                // 1. Device nou sau modificat (Sincronizare DB local)
                 DeviceDTO dto = objectMapper.readValue(body, DeviceDTO.class);
                 handleDeviceUpsert(dto);
 
             } else if (routingKey.startsWith("device.assigned")) {
-                // 2. Device asignat unui user (Actualizare legătură)
                 DeviceUserRelationDTO dto = objectMapper.readValue(body, DeviceUserRelationDTO.class);
                 handleDeviceAssign(dto);
 
             } else if (routingKey.startsWith("device.deleted")) {
-                // 3. Device șters
                 UUID deviceId = objectMapper.readValue(body, UUID.class);
                 handleDeviceDelete(deviceId);
 
             } else if (routingKey.startsWith("sensor.measurement")) {
-                // 4. Date de la senzor (Procesare consum)
                 MeasurementDTO dto = objectMapper.readValue(body, MeasurementDTO.class);
                 handleSensorData(dto);
             }
 
         } catch (Exception e) {
-            LOGGER.error("Failed to process message with key {}: {}", routingKey, e.getMessage());
+            LOGGER.error("Failed to process message {}: {}", routingKey, e.getMessage());
         }
     }
 
     private void handleDeviceUpsert(DeviceDTO dto) {
-        MonitoredDevice device = new MonitoredDevice(
-                dto.getId(),
-                dto.getMaxCons(),
-                dto.getUserId()
-        );
+        // Salvăm sau actualizăm device-ul. Dacă userId e null, îl lăsăm așa.
+        MonitoredDevice device = deviceRepository.findById(dto.getId())
+                .orElse(new MonitoredDevice(dto.getId(), dto.getMaxCons(),null));
+
+        device.setMaxHourlyConsumption(dto.getMaxCons());
+        // Actualizăm user-ul doar dacă vine nenul în DTO (pentru update-uri care nu schimbă userul)
+
+
         deviceRepository.save(device);
-        LOGGER.info("Synced device: {}", dto.getId());
+        LOGGER.info("Synced monitored device: {}", dto.getId());
     }
 
     private void handleDeviceAssign(DeviceUserRelationDTO dto) {
-        Optional<MonitoredDevice> deviceOpt = deviceRepository.findById(dto.getDeviceId());
-        if (deviceOpt.isPresent()) {
-            MonitoredDevice device = deviceOpt.get();
-            device.setUserId(dto.getUserId());
-            deviceRepository.save(device);
-            LOGGER.info("Assigned device {} to user {}", dto.getDeviceId(), dto.getUserId());
-        } else {
-            LOGGER.warn("Received assignment for unknown device: {}", dto.getDeviceId());
-        }
+        // Căutăm device-ul. Dacă nu există, îl creăm (Placeholder) pentru a nu pierde asignarea.
+        MonitoredDevice device = deviceRepository.findById(dto.getDeviceId())
+                .orElseGet(() -> {
+                    LOGGER.warn("Device {} not found during assignment. Creating placeholder.", dto.getDeviceId());
+                    return new MonitoredDevice(dto.getDeviceId(), 0.0, null); // MaxCons 0.0 temporar
+                });
+
+        device.setUserId(dto.getUserId());
+        deviceRepository.save(device);
+        LOGGER.info("Successfully assigned user {} to device {} in Monitoring DB", dto.getUserId(), dto.getDeviceId());
     }
 
     private void handleDeviceDelete(UUID deviceId) {
@@ -100,9 +100,15 @@ public class MonitoringConsumer {
     }
 
     private void handleSensorData(MeasurementDTO dto) {
-        LOGGER.info("Received measurement: {} for device {}", dto.getMeasurementValue(), dto.getDeviceId());
+        // Verificăm dacă device-ul există înainte de a procesa
+        if (!deviceRepository.existsById(dto.getDeviceId())) {
+            // Opțional: Poți crea device-ul și aici dacă vrei să vezi datele chiar și neasignate
+            LOGGER.warn("Received data for unknown device {}. Creating placeholder.", dto.getDeviceId());
+            MonitoredDevice placeholder = new MonitoredDevice(dto.getDeviceId(), 10.0, null); // Default limit
+            deviceRepository.save(placeholder);
+        }
 
-        // 1. Salvăm măsurătoarea brută (Cerut pentru istoric detaliat)
+        // Logica existentă de salvare
         Measurement measurement = new Measurement(
                 dto.getTimestamp(),
                 dto.getDeviceId(),
@@ -110,7 +116,6 @@ public class MonitoringConsumer {
         );
         measurementRepository.save(measurement);
 
-        // 2. 🔥 Apelăm logica de business: Calcul Consum Orar + Verificare Alertă
         monitoringService.processMeasurement(dto);
     }
 }

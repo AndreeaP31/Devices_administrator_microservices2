@@ -6,7 +6,6 @@ public class DeviceDTO {
     private UUID id;
     private String name;
     private Double maxCons;
-    private UUID userId; // Poate fi null la creare
 
     public DeviceDTO() {}
 
@@ -17,11 +16,9 @@ public class DeviceDTO {
     public void setName(String name) { this.name = name; }
     public Double getMaxCons() { return maxCons; }
     public void setMaxCons(Double maxCons) { this.maxCons = maxCons; }
-    public UUID getUserId() { return userId; }
-    public void setUserId(UUID userId) { this.userId = userId; }
 
     @Override
     public String toString() {
-        return "DeviceDTO{id=" + id + ", maxCons=" + maxCons + ", userId=" + userId + "}";
+        return "DeviceDTO{id=" + id + ", maxCons=" + maxCons + "}";
     }
 }

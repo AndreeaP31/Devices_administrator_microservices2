@@ -37,6 +37,11 @@ export function registerUser(data) {
     return apiRequest("POST", "/auth/register", data);
 }
 
+export function getConsumption(deviceId, dateTimestamp) {
+    // dateTimestamp trebuie să fie un long (ex: Date.now())
+    return apiRequest("GET", `/monitoring/${deviceId}/history?date=${dateTimestamp}`);
+}
+
 export function validateToken() {
     return apiRequest("GET", "/auth/validate");
 }

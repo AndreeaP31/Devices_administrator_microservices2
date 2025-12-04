@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -77,6 +78,22 @@ public class MonitoringService {
     public List<HourlyConsumption> getHourlyConsumption(UUID deviceId) {
         // Mult mai rapid: DB-ul filtrează și sortează
         return consumptionRepository.findByDeviceIdOrderByTimestampAsc(deviceId);
+    }
+
+    // În MonitoringService.java
+
+    public List<HourlyConsumption> getConsumptionForDay(UUID deviceId, long dateInMillis) {
+        // 1. Convertim timestamp-ul în LocalDate
+        LocalDate date = LocalDate.ofInstant(Instant.ofEpochMilli(dateInMillis), ZoneId.systemDefault());
+
+        // 2. Calculăm startul zilei (00:00:00)
+        long startOfDay = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+        // 3. Calculăm sfârșitul zilei (23:59:59)
+        long endOfDay = date.atTime(23, 59, 59).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+        // 4. Cerem datele din DB
+        return consumptionRepository.findByDeviceIdAndTimestampBetweenOrderByTimestampAsc(deviceId, startOfDay, endOfDay);
     }
 
 }

@@ -14,4 +14,5 @@ public interface HourlyConsumptionRepository extends JpaRepository<HourlyConsump
     // Caută o înregistrare pentru un device la o anumită oră (timestamp)
     Optional<HourlyConsumption> findByDeviceIdAndTimestamp(UUID deviceId, long timestamp);
     List<HourlyConsumption> findByDeviceIdOrderByTimestampAsc(UUID deviceId);
+    List<HourlyConsumption> findByDeviceIdAndTimestampBetweenOrderByTimestampAsc(UUID deviceId, long start, long end);
 }
