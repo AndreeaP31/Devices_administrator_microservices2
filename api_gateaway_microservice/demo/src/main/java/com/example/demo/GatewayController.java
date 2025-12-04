@@ -23,6 +23,9 @@ public class GatewayController {
     @Value("${device.service.url}")
     private String deviceService;
 
+    @Value("${monitoring.service.url}")
+    private String monitoringService;
+
     private final RestTemplate restTemplate;
 
     public GatewayController(RestTemplate restTemplate) {
@@ -42,6 +45,10 @@ public class GatewayController {
     @RequestMapping("/device/**")
     public ResponseEntity<?> forwardDevices(HttpServletRequest request) throws IOException {
         return forward(request, deviceService);
+    }
+    @RequestMapping("/monitoring/**")
+    public ResponseEntity<?> forwardMonitoring(HttpServletRequest request) throws IOException {
+        return forward(request, monitoringService);
     }
 
     private ResponseEntity<?> forward(HttpServletRequest request, String baseUrl) throws IOException {

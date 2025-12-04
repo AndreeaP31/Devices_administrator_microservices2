@@ -1,6 +1,5 @@
 package com.example.demo.services;
-
-import com.example.demo.RabbitMQConfig;
+import com.example.demo.config.RabbitMQConfig;
 import com.example.demo.dtos.MeasurementDTO;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;

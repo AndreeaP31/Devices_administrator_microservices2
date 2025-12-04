@@ -23,13 +23,13 @@ public class RabbitMQConfig {
     public Queue queue() {
         return new Queue(MONITORING_QUEUE, true);
     }
-
+//shd
     // 1. Ascultăm evenimentele despre Device-uri (create, update, delete, assign)
     @Bean
     public Binding bindingDevice(Queue queue, TopicExchange exchange) {
         return BindingBuilder.bind(queue).to(exchange).with("device.#");
     }
-
+//sajhd
     // 2. Ascultăm datele de la Simulator (Senzori)
     @Bean
     public Binding bindingSensor(Queue queue, TopicExchange exchange) {

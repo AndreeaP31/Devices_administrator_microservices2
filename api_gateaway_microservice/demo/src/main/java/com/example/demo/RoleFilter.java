@@ -102,11 +102,24 @@ public class RoleFilter implements Filter {
                 return;
             }
 
+
             System.err.println("   ❌ CLIENT forbidden");
             response.sendError(HttpServletResponse.SC_FORBIDDEN, "CLIENT forbidden");
             return;
         }
 
+        if (path.startsWith("/monitoring")) {
+            // Permitem accesul atât pentru ADMIN cât și pentru CLIENT
+            // Deoarece userul trebuie să fie autentificat (trece de JwtFilter), e safe.
+            if ("ADMIN".equals(role) || "CLIENT".equals(role)) {
+                System.out.println("   ✅ Monitoring access granted for: " + role);
+                chain.doFilter(request, response);
+                return;
+            } else {
+                response.sendError(HttpServletResponse.SC_FORBIDDEN, "Monitoring access denied");
+                return;
+            }
+        }
         chain.doFilter(request, response);
     }
 }

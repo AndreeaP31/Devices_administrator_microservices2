@@ -147,6 +147,27 @@ services:
       rabbitmq: # ✅ Așteaptă să pornească RabbitMQ
         condition: service_healthy
 
+  monitoring-db:
+    image: postgres:15-alpine
+    container_name: monitoring-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: monitoring_db
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5438:5432" # Port diferit pe host
+    volumes:
+      - monitoring_db_data:/var/lib/postgresql/data
+    networks:
+      - demo_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   traefik:
     image: traefik:v3.0
     container_name: traefik
@@ -161,6 +182,32 @@ services:
       - "./logs:/var/log/traefik"
     networks:
       - demo_net
+
+  monitoring-service:
+    build:
+      context: ../monitoring_microservice/demo
+      dockerfile: Dockerfile
+    container_name: monitoring-service
+    restart: on-failure
+    ports:
+      - "8090:8090" # Sau 8080, depinde ce port ai in application.properties
+    environment:
+      - DB_IP=monitoring-db
+      - DB_PORT=5432
+      - DB_DBNAME=monitoring_db
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+    networks:
+      - demo_net
+    depends_on:
+      monitoring-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   gateway-service:
     build:
@@ -198,6 +245,7 @@ volumes:
   user_db_data:
   device_db_data:
   auth_db_data:
+  monitoring_db_data:
 
 networks:
   demo_net:
