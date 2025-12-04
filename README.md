@@ -1,154 +1,99 @@
-Dispozitive Administrator — arhitectură microservicii (Spring Boot + React)
+# Energy Management System - Microservices Architecture
 
-Descriere pe scurt
-- Monorepo pentru o aplicație de administrare a dispozitivelor, organizată în microservicii.
-- Backend: Spring Boot (Java) împărțit în servicii: gateway, auth, user, device.
-- Frontend: React (folderul `frontend`).
-- Autentificare și autorizare pe bază de JWT, propagat prin API Gateway.
+Acest proiect reprezintă un sistem distribuit de gestionare a energiei, construit pe o arhitectură de microservicii, utilizând containere Docker pentru orchestrare.
 
-Cuprins
-- Structura proiectului
-- Arhitectură și flux de autentificare/autorizare
-- Reguli de acces (roluri)
-- Cerințe de rulare
-- Pornire rapidă (development)
-- Exemple de apeluri API
-- Configurare JWT și CORS
-- Bune practici și depanare rapidă
-- Notă Traefik și roadmap
+---
 
-Structura proiectului (nivel 1–2)
-```
-api_gateaway_microservice/
-  demo/
-auth_microservice/
-  demo/
-user_microservice/
-  demo/
-device_microservice/
-  demo/
-frontend/
-  src/
-  public/
-trefik_config/
-  dynamic/
-  logs/
-```
+## 🏗️ Arhitectură & Tehnologii
 
-Rolul fiecărui modul
-- `api_gateaway_microservice` — API Gateway (Spring Boot). Aplica reguli CORS, autentifică și extrage atributele din JWT, aplică reguli de rol și rutează cererile către microservicii. Filtre cheie: `JwtAuthenticationFilter`, `RoleFilter`, `CachedBodyHttpServletRequest`.
-- `auth_microservice` — autentificare, emitere token JWT (include secret/durată token configurabile).
-- `user_microservice` — management utilizatori (creare, listare, update, etc.). Rutele încep cu `/users` prin gateway.
-- `device_microservice` — management dispozitive; include rute filtrate per utilizator.
-- `frontend` — aplicație React pentru interfața utilizator.
-- `trefik_config` — fișiere pentru Traefik (dacă se rulează cu reverse-proxy; opțional în dev local).
+Sistemul este compus din următoarele module interconectate:
 
-Arhitectură și flux de autentificare/autorizare
-1) Clientul apelează Auth Service prin Gateway: `/api/auth/...`.
-2) Auth Service validează credentialele și returnează un JWT (conține cel puțin `sub`/`userId` și `role`).
-3) La cererile ulterioare, clientul trimite `Authorization: Bearer <JWT>`.
-4) În Gateway:
-   - `JwtAuthenticationFilter` validează tokenul, atașează `role` și `userId` pe request.
-   - `RoleFilter` aplică regulile de acces în funcție de cale și rol.
-   - Preflight CORS (`OPTIONS`) este bypass (nu se aplică verificare de rol), pentru a permite apeluri browser cross-origin.
+### 1. Frontend
+* **Tehnologie:** React + Vite
+* **Rol:** Interfața cu utilizatorul (Client & Administrator).
+* **Port Acces:** `http://localhost:5174`
 
-Reguli de acces (din `RoleFilter`)
-- Public: toate rutele sub `/auth` sunt publice (ex.: `POST /api/auth/login`).
-- Intern: `POST /api/users` este permis fără rol (apel intern pentru provisionare între servicii).
-- Administrare utilizatori: rutele care încep cu `/users` necesită `role=ADMIN`.
-- Dispozitive: rutele care încep cu `/device`:
-  - `ADMIN` are acces complet.
-  - `CLIENT` poate accesa doar resursa proprie cu pattern-ul:
-    `/api/device/{userId}/for-user/devices`, unde `{userId}` trebuie să corespundă cu `userId` din JWT.
+### 2. Backend (Microservicii Java Spring Boot)
+Fiecare microserviciu are propria bază de date și responsabilități distincte.
 
-Cerințe de rulare
-- Java 17+ (JDK) pentru backend (Spring Boot).
-- Maven 3.9+ (sau wrapper-ul `mvnw` acolo unde este prezent).
-- Node.js 18+ și npm/yarn pentru frontend.
-- (Opțional) PostgreSQL sau alte baze de date, conform configurației fiecărui serviciu.
+| Serviciu | Port Local (Host) | Port Intern (Container) | Descriere |
+| :--- | :--- | :--- | :--- |
+| **API Gateway** | `8088` | `8084` | Punctul unic de intrare. Redirecționează cererile și gestionează securitatea. |
+| **User Service** | `8085` | `8082` | CRUD utilizatori, gestionare administratori/clienți. |
+| **Device Service** | `8087` | `8081` | CRUD dispozitive, mapare dispozitiv-utilizator. |
+| **Auth Service** | `8086` | `8083` | Autentificare, generare și validare token JWT. |
+| **Monitoring Service**| `8090` | `8090` | Monitorizare consum, grafice, consumator RabbitMQ. |
 
-Pornire rapidă (development)
-Rulați serviciile în terminale separate, din folderele `demo` ale fiecărui microserviciu.
+### 3. Baze de Date (PostgreSQL)
+Fiecare serviciu are o instanță dedicată (sau bază de date separată) pentru izolare.
 
-- API Gateway:
-  ```
-  cd api_gateaway_microservice\demo
-  mvn spring-boot:run
-  ```
+| Bază de Date | Port Local (Host) | Serviciu Asociat |
+| :--- | :--- | :--- |
+| `user_db` | `5436` | User Service |
+| `device_db` | `5435` | Device Service |
+| `auth_db` | `5437` | Auth Service |
+| `monitoring_db`| `5438` | Monitoring Service |
 
-- Auth Service:
-  ```
-  cd auth_microservice\demo
-  mvn spring-boot:run
-  ```
+### 4. Messaging & Infrastructure
+* **RabbitMQ** (Port `5672` / `15672` UI): Broker de mesaje pentru comunicarea asincronă a datelor de la senzor către serviciul de monitorizare.
+* **Traefik** (Port `8080`): Reverse proxy / Load balancer (opțional, configurat în stack).
 
-- User Service:
-  ```
-  cd user_microservice\demo
-  mvn spring-boot:run
-  ```
+---
 
-- Device Service:
-  ```
-  cd device_microservice\demo
-  mvn spring-boot:run
-  ```
+## 🚀 Instalare și Rulare
 
-Porturile pot fi configurate în fișierele `application.properties`/`application.yml` din fiecare serviciu. Implicit, Gateway-ul expune rutele către clientul extern cu prefixul `/api`.
+Sistemul este complet containerizat. Pentru a-l porni, ai nevoie de **Docker Desktop** instalat.
 
-Frontend (React)
-```
-cd frontend
-npm install
-npm start
-```
+1.  **Navighează în folderul cu configurația Docker:**
+    ```bash
+    cd trefik_config
+    ```
 
-Exemple de apeluri API (prin Gateway)
-- Login (public):
-  ```
-  POST /api/auth/login
-  Content-Type: application/json
-  {
-    "email": "user@example.com",
-    "password": "parola"
-  }
-  ```
+2.  **Pornirea stack-ului:**
+    ```bash
+    docker-compose up -d --build
+    ```
+    *Comanda va construi imaginile pentru fiecare microserviciu și va porni containerele în ordinea corectă (așteptând bazele de date și RabbitMQ).*
 
-- Listare utilizatori (ADMIN):
-  ```
-  GET /api/users
-  Authorization: Bearer <JWT-ADMIN>
-  ```
+3.  **Verificare status:**
+    ```bash
+    docker-compose ps
+    ```
 
-- Dispozitivele utilizatorului curent (CLIENT):
-  ```
-  GET /api/device/{userId}/for-user/devices
-  Authorization: Bearer <JWT-CLIENT-cu-userId={userId}>
-  ```
+---
 
-Configurare JWT și CORS
-- Configurați secretul JWT și expirarea în Auth Service.
-- Gateway-ul gestionează CORS; preflight-ul `OPTIONS` este permis automat (nu se blochează pe rol).
-- Clientul trebuie să trimită `Authorization: Bearer <token>` la rutele protejate.
+## 🌐 API Gateway & Rutare
 
-Bune practici
-- Direcționați toate apelurile externe prin API Gateway (prefix `/api`).
-- Pentru apeluri din browser, verificați antetele CORS (Origin, Methods, Headers) în răspuns.
-- În dezvoltare, urmăriți log-urile Gateway-ului: filtrele scriu mesaje utile (ex.: rol, userId, calea solicitată, bypass OPTIONS).
+Toate cererile din Frontend trebuie trimise către **API Gateway** pe portul **8088**. Acesta le rutează intern către serviciile corespunzătoare.
 
-Depanare rapidă
-- 403 la rutele `/users`: verificați rolul — este necesar `ADMIN`.
-- 403 la `/device/.../for-user/devices`: `{userId}` din URL trebuie să corespundă `userId` din JWT dacă rolul este `CLIENT`.
-- 401/invalid token: verificați semnătura JWT, expirarea și prezența header-ului `Authorization`.
-- Probleme CORS în browser: confirmați că preflight `OPTIONS` primește 200 și că metoda/antetele reale sunt permise.
+| Rută (Path) | Destinație Internă | Exemplu URL Acces |
+| :--- | :--- | :--- |
+| `/auth/**` | `auth-service:8083` | `POST http://localhost:8088/auth/login` |
+| `/users/**` | `user-service:8082` | `GET http://localhost:8088/users` |
+| `/device/**` | `device-service:8081` | `GET http://localhost:8088/device` |
+| `/monitoring/**`| `monitoring-service:8090`| `GET http://localhost:8088/monitoring/{id}` |
 
-Notă Traefik
-- Folderul `trefik_config` conține fișiere utile dacă se rulează infrastructura cu Traefik (Docker/Kubernetes). Dacă nu utilizați Traefik, îl puteți ignora în dezvoltare locală.
+**Notă:** Gateway-ul se ocupă de forward-area header-ului `Authorization` și a parametrilor de query (ex: `?date=...`).
 
-Roadmap (scurt)
-- Teste end-to-end pentru fluxurile de login și acces controlat la `/device`.
-- Scripturi Docker Compose pentru rularea unificată a tuturor serviciilor.
-- Documentarea completă a contractelor API (OpenAPI/Swagger) pentru fiecare microserviciu.
+---
 
-Contribuții
-- Deschis contribuțiilor. Vă rugăm să creați issue-uri/PR-uri pentru bugfix-uri și îmbunătățiri.
+## 📡 Fluxul de Date (Senzori & Monitorizare)
+
+1.  **Simulatorul** (aplicație separată) citește fișierul `sensor.csv`.
+2.  Datele sunt trimise către coada **RabbitMQ**.
+3.  **Monitoring Service** ascultă coada, preia datele și le salvează în `monitoring_db`.
+4.  Dacă un consum depășește limita maximă setată pentru dispozitiv, se calculează un warning (logica de business).
+5.  **Frontend-ul** apelează `/monitoring` prin Gateway pentru a afișa graficul de consum în timp real.
+
+## 🛠️ Configurare Variabile de Mediu
+
+Configurările principale se află în `docker-compose.yml`. 
+Dacă dorești să schimbi porturile sau credențialele, modifică secțiunea `environment` a serviciului vizat.
+
+Exemplu (Gateway):
+```yaml
+  gateway-service:
+    environment:
+      AUTH_URL: http://auth-service:8083
+      USER_URL: http://user-service:8082
+      DEVICE_URL: http://device-service:8081
