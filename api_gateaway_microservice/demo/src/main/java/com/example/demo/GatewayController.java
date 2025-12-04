@@ -53,13 +53,16 @@ public class GatewayController {
 
     private ResponseEntity<?> forward(HttpServletRequest request, String baseUrl) throws IOException {
         String path = request.getRequestURI();
-        String url = baseUrl + path;
+
+        // ✅ FIX: Append Query String if present (e.g., ?date=123456)
+        String queryString = request.getQueryString();
+        String url = baseUrl + path + (queryString != null ? "?" + queryString : "");
 
         System.out.println("═══════════════════════════════════════");
         System.out.println("🔵 GATEWAY FORWARD");
         System.out.println("Method: " + request.getMethod());
         System.out.println("Original URI: " + request.getRequestURI());
-        System.out.println("Target URL: " + url);
+        System.out.println("Target URL: " + url); // Log the full URL to verify
         System.out.println("Base URL: " + baseUrl);
 
         HttpMethod method = HttpMethod.valueOf(request.getMethod());
@@ -115,27 +118,23 @@ public class GatewayController {
                     .body(response.getBody());
 
         }catch (HttpStatusCodeException ex) {
-        // <-- asta prinde 400, 401, 403, 404, 500 venite de la AUTH / USER / DEVICE services
-        System.err.println("❌ ERROR FROM MICROSERVICE:");
-        System.err.println("   Status: " + ex.getStatusCode());
-        System.err.println("   Body: " + ex.getResponseBodyAsString());
-        System.err.println("═══════════════════════════════════════");
+            System.err.println("❌ ERROR FROM MICROSERVICE:");
+            System.err.println("   Status: " + ex.getStatusCode());
+            System.err.println("   Body: " + ex.getResponseBodyAsString());
+            System.err.println("═══════════════════════════════════════");
 
-        // trimitem exact același răspuns în Postman
-        return ResponseEntity
-                .status(ex.getStatusCode())
-                .body(ex.getResponseBodyAsString());
+            return ResponseEntity
+                    .status(ex.getStatusCode())
+                    .body(ex.getResponseBodyAsString());
 
-    } catch (Exception e) {
-        // <-- prinde DOAR erorile din gateway
-        System.err.println("❌ UNEXPECTED GATEWAY ERROR:");
-        e.printStackTrace();
-        System.err.println("═══════════════════════════════════════");
+        } catch (Exception e) {
+            System.err.println("❌ UNEXPECTED GATEWAY ERROR:");
+            e.printStackTrace();
+            System.err.println("═══════════════════════════════════════");
 
-        return ResponseEntity
-                .status(500)
-                .body("Gateway INTERNAL ERROR: " + e.getMessage());
+            return ResponseEntity
+                    .status(500)
+                    .body("Gateway INTERNAL ERROR: " + e.getMessage());
+        }
     }
-
-}
 }
